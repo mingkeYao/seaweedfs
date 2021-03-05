@@ -47,6 +47,21 @@ func (fs *FilerServer) GetOrHeadHandler(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
+	//ymk 自定义文件夹打包下载功能
+	if isForDirectory && entry.IsDirectory() && r.FormValue("target") == "zip" {
+
+		adjustHeaderContentDisposition(w, r, entry.Name() + ZipSuffix)
+
+		err := fs.zipDirHandler(w, entry)
+
+		if err != nil {
+			glog.V(0).Infof("Internal %s: %v", path, err)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+
+		return
+	}
+
 	if entry.IsDirectory() {
 		if fs.option.DisableDirListing {
 			w.WriteHeader(http.StatusMethodNotAllowed)

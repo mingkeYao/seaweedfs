@@ -41,6 +41,7 @@ body { padding-bottom: 128px; }
   border-radius: 2px;
   border: 1px solid #ccc;
   float: right;
+  margin-left: 5px;
 }
 .button:hover {
   background: #ddd;
@@ -63,14 +64,23 @@ body { padding-bottom: 128px; }
 				SeaweedFS Filer
 			</h1>
 		</div>
+<div class="row">
+
+<span style="float: right">
+<input placeholder="please full path with your new directory" id="newDirectoryName">
+<label class="button" onclick="newDirectoryName()">new directory</label>
+</span>
+</div>
 		<div class="row">
 			<div>
+			current directory: &nbsp
 			{{ range $entry := .Breadcrumbs }}
 				<a href="{{ printpath $entry.Link }}" >
 					{{ $entry.Name }}
 				</a>
 			{{ end }}
 				<label class="button" for="fileElem">Upload</label>
+				<label class="button" onclick="download()">download</label>
 			</div>
 		</div>
 
@@ -190,6 +200,29 @@ function uploadFile(file, i) {
   formData.append('file', file)
   xhr.send(formData)
 }
+
+function download() {
+	var url = window.location.href
+	if (url.lastIndexOf("/") != url.length - 1) {
+		url = url+ "/"
+	}
+	window.open(url + "?target=zip" )
+
+}
+
+document.getElementById("newDirectoryName").value = window.location.pathname
+
+function newDirectoryName(){
+var fullPath = document.getElementById("newDirectoryName").value
+if (!fullPath) {return }
+if (fullPath.lastIndexOf("/") != fullPath.length - 1) {
+		fullPath = fullPath+ "/"
+	}
+var xhr = new XMLHttpRequest()
+ xhr.open('POST', fullPath, true)
+  xhr.send()
+}
+
 </script>
 </html>
 `))

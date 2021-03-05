@@ -9,6 +9,8 @@ import (
 	"github.com/chrislusf/seaweedfs/weed/stats"
 )
 
+const ZipSuffix = ".weed.wutos"
+
 func (fs *FilerServer) filerHandler(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
@@ -30,8 +32,13 @@ func (fs *FilerServer) filerHandler(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
 	}
+
 	switch r.Method {
 	case "GET":
+
+		w.Header().Set("Access-Control-Allow-Origin", "*")             //允许访问所有域
+		w.Header().Add("Access-Control-Allow-Headers", "Content-Type") //header的类型
+
 		stats.FilerRequestCounter.WithLabelValues("get").Inc()
 		fs.GetOrHeadHandler(w, r, true)
 		stats.FilerRequestHistogram.WithLabelValues("get").Observe(time.Since(start).Seconds())

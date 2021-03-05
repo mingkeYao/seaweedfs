@@ -1,12 +1,14 @@
 package weed_server
 
 import (
+	"archive/zip"
 	"context"
 	"crypto/md5"
 	"fmt"
 	"hash"
 	"io"
 	"io/ioutil"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path"
@@ -44,18 +46,20 @@ func (fs *FilerServer) autoChunk(ctx context.Context, w http.ResponseWriter, r *
 		stats.FilerRequestHistogram.WithLabelValues("postAutoChunk").Observe(time.Since(start).Seconds())
 	}()
 
-	var reply *FilerPostResult
+	var reply = make([]*FilerPostResult, 1)
 	var err error
 	var md5bytes []byte
 	if r.Method == "POST" {
 		if r.Header.Get("Content-Type") == "" && strings.HasSuffix(r.URL.Path, "/") {
-			reply, err = fs.mkdir(ctx, w, r)
+			reply[0], err = fs.mkdir(ctx, w, r)
+
 		} else {
 			reply, md5bytes, err = fs.doPostAutoChunk(ctx, w, r, chunkSize, so)
 		}
 	} else {
-		reply, md5bytes, err = fs.doPutAutoChunk(ctx, w, r, chunkSize, so)
+		reply[0], md5bytes, err = fs.doPutAutoChunk(ctx, w, r, chunkSize, so)
 	}
+
 	if err != nil {
 		if strings.HasPrefix(err.Error(), "read input:") {
 			writeJsonError(w, r, 499, err)
@@ -63,14 +67,21 @@ func (fs *FilerServer) autoChunk(ctx context.Context, w http.ResponseWriter, r *
 			writeJsonError(w, r, http.StatusInternalServerError, err)
 		}
 	} else if reply != nil {
+
 		if len(md5bytes) > 0 {
 			w.Header().Set("Content-MD5", util.Base64Encode(md5bytes))
 		}
-		writeJsonQuiet(w, r, http.StatusCreated, reply)
+
+		if len(reply) == 1 {
+			writeJsonQuiet(w, r, http.StatusCreated, reply[0])
+		}else {
+			writeJsonQuiet(w, r, http.StatusCreated, reply)
+		}
+
 	}
 }
 
-func (fs *FilerServer) doPostAutoChunk(ctx context.Context, w http.ResponseWriter, r *http.Request, chunkSize int32, so *operation.StorageOption) (filerResult *FilerPostResult, md5bytes []byte, replyerr error) {
+func (fs *FilerServer) doPostAutoChunk(ctx context.Context, w http.ResponseWriter, r *http.Request, chunkSize int32, so *operation.StorageOption) (filerResults []*FilerPostResult, md5bytes []byte, replyerr error) {
 
 	multipartReader, multipartReaderErr := r.MultipartReader()
 	if multipartReaderErr != nil {
@@ -91,15 +102,86 @@ func (fs *FilerServer) doPostAutoChunk(ctx context.Context, w http.ResponseWrite
 		contentType = ""
 	}
 
-	fileChunks, md5Hash, chunkOffset, err, smallContent := fs.uploadReaderToChunks(w, r, part1, chunkSize, fileName, contentType, so)
-	if err != nil {
-		return nil, nil, err
+	filerResults = make([]*FilerPostResult, 1)
+
+	if strings.HasSuffix(fileName, ZipSuffix[1:]) {
+		//说明是自定义的压缩文件
+		//缓存到本地
+		filerResults, replyerr = fs.doZipPostAutoChunk(ctx, w, r, chunkSize, so, fileName, part1)
+
+		if replyerr != nil {
+			return nil, nil, replyerr
+		}
+
+	} else {
+
+		fileChunks, md5Hash, chunkOffset, err, smallContent := fs.uploadReaderToChunks(w, r, part1, chunkSize, fileName, contentType, so)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		md5bytes = md5Hash.Sum(nil)
+		filerResults[0], replyerr = fs.saveMetaData(ctx, r, fileName, contentType, so, md5bytes, fileChunks, chunkOffset, smallContent)
+
+		if replyerr != nil {
+			return nil, nil, replyerr
+		}
+
 	}
 
-	md5bytes = md5Hash.Sum(nil)
-	filerResult, replyerr = fs.saveMetaData(ctx, r, fileName, contentType, so, md5bytes, fileChunks, chunkOffset, smallContent)
-
 	return
+}
+
+func (fs *FilerServer) doZipPostAutoChunk(ctx context.Context, w http.ResponseWriter, r *http.Request, chunkSize int32, so *operation.StorageOption, fileName string, part1 *multipart.Part) ([]*FilerPostResult, error) {
+
+	tempDir, _ := ioutil.TempDir(GetCurrentDirectory(), "filertemp_*")
+	tempFile := tempDir + "/" + fileName + ".tmp"
+	bytes, _ := ioutil.ReadAll(io.TeeReader(part1, md5.New()))
+
+	replyerr := ioutil.WriteFile(tempFile, bytes, os.ModeTemporary)
+
+	if replyerr != nil {
+		return nil, replyerr
+	}
+
+	defer os.Remove(tempFile)
+	defer os.Remove(tempDir)
+
+	zipReader, replyerr := zip.OpenReader(tempFile)
+
+	if replyerr != nil {
+		return nil, replyerr
+	}
+
+	defer zipReader.Close()
+	filerResults := make( []*FilerPostResult, len(zipReader.File))
+
+	for index, file := range zipReader.File {
+
+		readCloser, err := file.Open()
+
+		if err != nil {
+			return nil, err
+		}
+
+		fileChunks, md5Hash, chunkOffset, err, smallContent := fs.uploadReaderToChunks(w, r, readCloser, chunkSize, file.Name, "", so)
+
+		if err != nil {
+			return nil, err
+		}
+		md5bytes := md5Hash.Sum(nil)
+
+		filerResult, replyerr := fs.saveMetaData(ctx, r, strings.TrimPrefix(file.Name, "/"), "", so, md5bytes, fileChunks, chunkOffset, smallContent)
+
+		if replyerr != nil {
+			return nil, replyerr
+		}
+		filerResults[index] = filerResult
+
+		_ = readCloser.Close()
+
+	}
+	return filerResults, nil
 }
 
 func (fs *FilerServer) doPutAutoChunk(ctx context.Context, w http.ResponseWriter, r *http.Request, chunkSize int32, so *operation.StorageOption) (filerResult *FilerPostResult, md5bytes []byte, replyerr error) {

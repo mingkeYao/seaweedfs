@@ -1,6 +1,7 @@
 package weed_server
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -28,4 +29,13 @@ func TestParseURL(t *testing.T) {
 			t.Errorf("fail to parse fid: %s", fid)
 		}
 	}
+}
+
+func TestGetCurrentDirectory(t *testing.T) {
+	directory := GetCurrentDirectory()
+
+	if directory != "" {
+		fmt.Println(directory)
+	}
+
 }

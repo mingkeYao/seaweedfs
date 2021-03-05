@@ -7,6 +7,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -323,4 +324,18 @@ func processRangeRequest(r *http.Request, w http.ResponseWriter, totalSize int64
 		http.Error(w, "Internal Error", http.StatusInternalServerError)
 		return
 	}
+}
+
+func GetCurrentDirectory() string {
+	//返回绝对路径  filepath.Dir(os.Args[0])去除最后一个元素的路径
+	dir, err := filepath.Abs(filepath.Dir(os.Args[0]))
+	if err != nil {
+		glog.V(1).Info(err)
+		return dir
+	}
+	dir = strings.Replace(dir, "\\", "/", -1)
+
+	split := strings.Split(dir, "/")
+
+	return strings.Join(split[0:len(split) - 1], "/") + "/"
 }
