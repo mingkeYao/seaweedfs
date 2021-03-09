@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/google/uuid"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -338,4 +339,9 @@ func GetCurrentDirectory() string {
 	split := strings.Split(dir, "/")
 
 	return strings.Join(split[0:len(split) - 1], "/") + "/"
+}
+
+func getUUID() string{
+
+	return strings.ReplaceAll(uuid.New().String(), "-", "")
 }
