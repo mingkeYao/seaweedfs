@@ -8,10 +8,13 @@ import (
 	"hash"
 	"io"
 	"io/ioutil"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"os"
+	"os/exec"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -102,11 +105,8 @@ func (fs *FilerServer) doPostAutoChunk(ctx context.Context, w http.ResponseWrite
 		contentType = ""
 	}
 
-	filerResults = make([]*FilerPostResult, 1)
-
 	if strings.HasSuffix(fileName, ZipSuffix[1:]) {
 		//说明是自定义的压缩文件
-		//缓存到本地
 		filerResults, replyerr = fs.doZipPostAutoChunk(ctx, w, r, chunkSize, so, fileName, part1)
 
 		if replyerr != nil {
@@ -115,17 +115,14 @@ func (fs *FilerServer) doPostAutoChunk(ctx context.Context, w http.ResponseWrite
 
 	} else {
 
-		fileChunks, md5Hash, chunkOffset, err, smallContent := fs.uploadReaderToChunks(w, r, part1, chunkSize, fileName, contentType, so)
+		filerResult, _md5bytes, err := fs.uploadReader(ctx, w, r, part1, chunkSize, fileName, "", so, r.URL.Query().Get("isVideo") == "true")
+
 		if err != nil {
 			return nil, nil, err
 		}
 
-		md5bytes = md5Hash.Sum(nil)
-		filerResults[0], replyerr = fs.saveMetaData(ctx, r, fileName, contentType, so, md5bytes, fileChunks, chunkOffset, smallContent)
-
-		if replyerr != nil {
-			return nil, nil, replyerr
-		}
+		filerResults = append(filerResults,filerResult)
+		md5bytes = _md5bytes
 
 	}
 
@@ -134,20 +131,18 @@ func (fs *FilerServer) doPostAutoChunk(ctx context.Context, w http.ResponseWrite
 
 func (fs *FilerServer) doZipPostAutoChunk(ctx context.Context, w http.ResponseWriter, r *http.Request, chunkSize int32, so *operation.StorageOption, fileName string, part1 *multipart.Part) ([]*FilerPostResult, error) {
 
-	tempDir, _ := ioutil.TempDir(GetCurrentDirectory(), "filertemp_*")
-	tempFile := tempDir + "/" + fileName + ".tmp"
-	bytes, _ := ioutil.ReadAll(io.TeeReader(part1, md5.New()))
+	tempFile, _ := ioutil.TempFile("", "filertemp_*")
+	uploadBytes, _ := ioutil.ReadAll(io.TeeReader(part1, md5.New()))
 
-	replyerr := ioutil.WriteFile(tempFile, bytes, os.ModeTemporary)
+	replyerr := ioutil.WriteFile(tempFile.Name(), uploadBytes, os.ModeTemporary)
 
 	if replyerr != nil {
 		return nil, replyerr
 	}
 
-	defer os.Remove(tempFile)
-	defer os.Remove(tempDir)
+	defer os.Remove(tempFile.Name())
 
-	zipReader, replyerr := zip.OpenReader(tempFile)
+	zipReader, replyerr := zip.OpenReader(tempFile.Name())
 
 	if replyerr != nil {
 		return nil, replyerr
@@ -164,14 +159,7 @@ func (fs *FilerServer) doZipPostAutoChunk(ctx context.Context, w http.ResponseWr
 			return nil, err
 		}
 
-		fileChunks, md5Hash, chunkOffset, err, smallContent := fs.uploadReaderToChunks(w, r, readCloser, chunkSize, file.Name, "", so)
-
-		if err != nil {
-			return nil, err
-		}
-		md5bytes := md5Hash.Sum(nil)
-
-		filerResult, replyerr := fs.saveMetaData(ctx, r, strings.TrimPrefix(file.Name, "/"), "", so, md5bytes, fileChunks, chunkOffset, smallContent)
+		filerResult, _, replyerr := fs.uploadReader(ctx, w, r, readCloser, chunkSize, file.Name, "", so, false)
 
 		if replyerr != nil {
 			return nil, replyerr
@@ -192,16 +180,108 @@ func (fs *FilerServer) doPutAutoChunk(ctx context.Context, w http.ResponseWriter
 		contentType = ""
 	}
 
-	fileChunks, md5Hash, chunkOffset, err, smallContent := fs.uploadReaderToChunks(w, r, r.Body, chunkSize, fileName, contentType, so)
+	filerResult, md5bytes, replyerr = fs.uploadReader(ctx, w, r, r.Body, chunkSize, fileName, contentType, so, false)
+
+	return
+}
+
+func (fs *FilerServer) uploadReader(ctx context.Context, w http.ResponseWriter, r *http.Request, reader io.Reader, chunkSize int32, fileName string, contentType string, so *operation.StorageOption, isVideo bool) (filerResult *FilerPostResult, md5bytes []byte, err error) {
+
+	var tempfilepath string
+	var temppicpath string
+	var picid string
+
+	if isVideo {
+
+		bs, _ := ioutil.ReadAll(reader)
+		file, _ := ioutil.TempFile("", "video_temp.*")
+		file.Write(bs)
+		file.Close()
+		tempfilepath = file.Name()
+		defer os.Remove(tempfilepath)
+
+		picid = getUUID() + ".jpg"
+
+		abs, _ := filepath.Abs(tempfilepath)
+		dir := filepath.Dir(abs)
+
+		temppicpath = dir + "/" + picid
+
+		command := exec.Command(GetCurrentDirectory()+"shoot_cut.sh", tempfilepath, temppicpath)
+		// cmd := fmt.Sprintf("-y -i %s -y -f image2 -ss 00:00:01 -t 0.001 %s", tempfilepath, temppicpath)
+		// command := exec.Command("/usr/local/ffmpeg/bin/ffmpeg", strings.Split(cmd, " ")...)
+
+		errPipe, _ := command.StderrPipe()
+		stdout, _ := command.StdoutPipe()
+
+		defer errPipe.Close()
+
+		err := command.Start()
+
+		if err != nil {
+
+			return nil, nil, err
+		}
+
+		err = command.Wait()
+
+		if err != nil {
+
+			out_bytes, _ := ioutil.ReadAll(stdout)
+			err_bytes, _ := ioutil.ReadAll(errPipe)
+
+			return nil, nil, fmt.Errorf(string(out_bytes) + ": " + string(err_bytes) +": " + err.Error())
+		}
+
+		picBytes, err := ioutil.ReadFile(temppicpath)
+
+		if err != nil {
+			return nil, nil, err
+		}
+
+		defer os.Remove(temppicpath)
+
+		_, _, err = fs.uploadReader(ctx, w, r, util.NewBytesReader(picBytes), chunkSize, picid, "", so, false)
+
+		if err != nil {
+			return nil, nil, err
+		}
+
+		reader = util.NewBytesReader(bs)
+
+	}
+
+	if contentType == "" {
+
+		contentType = mime.TypeByExtension(strings.ToLower(filepath.Ext(fileName)))
+	}
+
+	if strings.HasPrefix(fileName, "/") {
+		fileName = fileName[1:]
+	}
+
+	fileChunks, md5Hash, chunkOffset, err, smallContent := fs.uploadReaderToChunks(w, r, reader, chunkSize, fileName, contentType, so)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	md5bytes = md5Hash.Sum(nil)
-	filerResult, replyerr = fs.saveMetaData(ctx, r, fileName, contentType, so, md5bytes, fileChunks, chunkOffset, smallContent)
+	filerResult, err = fs.saveMetaData(ctx, r, fileName, contentType, so, md5bytes, fileChunks, chunkOffset, smallContent)
 
-	return
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if isVideo {
+		//执行shell脚本
+		filerResult.Cover = picid
+	}
+
+
+
+	return filerResult, md5bytes, err
 }
+
 
 func isAppend(r *http.Request) bool {
 	return r.URL.Query().Get("op") == "append"
@@ -311,7 +391,7 @@ func (fs *FilerServer) saveMetaData(ctx context.Context, r *http.Request, fileNa
 	return filerResult, replyerr
 }
 
-func (fs *FilerServer) uploadReaderToChunks(w http.ResponseWriter, r *http.Request, reader io.Reader, chunkSize int32, fileName, contentType string, so *operation.StorageOption) ([]*filer_pb.FileChunk, hash.Hash, int64, error, []byte) {
+func (fs *FilerServer) uploadReaderToChunks(w http.ResponseWriter, r *http.Request, reader io.Reader, chunkSize int32, fileName string, contentType string, so *operation.StorageOption) ([]*filer_pb.FileChunk, hash.Hash, int64, error, []byte) {
 	var fileChunks []*filer_pb.FileChunk
 
 	md5Hash := md5.New()

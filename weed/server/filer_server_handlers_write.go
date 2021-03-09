@@ -27,6 +27,7 @@ type FilerPostResult struct {
 	Error string `json:"error,omitempty"`
 	Fid   string `json:"fid,omitempty"`
 	Url   string `json:"url,omitempty"`
+	Cover string `json:"cover,omitempty"` //新增对标video类型文件封面的cover
 }
 
 func (fs *FilerServer) assignNewFileInfo(so *operation.StorageOption) (fileId, urlLocation string, auth security.EncodedJwt, err error) {
