@@ -84,3 +84,5 @@ other/java/hdfs/dependency-reduced-pom.xml
 # binary file
 weed/weed
 filerldb2
+.vscode
+shoot_cut.sh
