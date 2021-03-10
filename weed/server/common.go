@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/google/uuid"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -13,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 
 	"google.golang.org/grpc"
 
@@ -334,11 +335,10 @@ func GetCurrentDirectory() string {
 		glog.V(1).Info(err)
 		return dir
 	}
+	
 	dir = strings.Replace(dir, "\\", "/", -1)
 
-	split := strings.Split(dir, "/")
-
-	return strings.Join(split[0:len(split) - 1], "/") + "/"
+	return strings.TrimSuffix(dir, "/") + "/"
 }
 
 func getUUID() string{
