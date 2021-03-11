@@ -188,8 +188,6 @@ func (fs *FilerServer) doPutAutoChunk(ctx context.Context, w http.ResponseWriter
 func (fs *FilerServer) uploadReader(ctx context.Context, w http.ResponseWriter, r *http.Request, reader io.Reader, chunkSize int32, fileName string, contentType string, so *operation.StorageOption, isVideo bool) (filerResult *FilerPostResult, md5bytes []byte, err error) {
 
 	var tempfilepath string
-	var temppicpath string
-	var picid string
 
 	if isVideo {
 
@@ -200,12 +198,40 @@ func (fs *FilerServer) uploadReader(ctx context.Context, w http.ResponseWriter, 
 		tempfilepath = file.Name()
 		defer os.Remove(tempfilepath)
 
-		picid = getUUID() + ".jpg"
+		reader = util.NewBytesReader(bs)
+
+	}
+
+	if contentType == "" {
+
+		contentType = mime.TypeByExtension(strings.ToLower(filepath.Ext(fileName)))
+	}
+
+	if strings.HasPrefix(fileName, "/") {
+		fileName = fileName[1:]
+	}
+
+	fileChunks, md5Hash, chunkOffset, err, smallContent := fs.uploadReaderToChunks(w, r, reader, chunkSize, fileName, contentType, so)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	md5bytes = md5Hash.Sum(nil)
+	filerResult, err = fs.saveMetaData(ctx, r, fileName, contentType, so, md5bytes, fileChunks, chunkOffset, smallContent)
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if isVideo {
+
+		//执行shell脚本
+		picid := getUUID() + ".jpg"
 
 		abs, _ := filepath.Abs(tempfilepath)
 		dir := filepath.Dir(abs)
 
-		temppicpath = dir + "/" + picid
+		temppicpath := dir + "/" + picid
 
 		command := exec.Command(GetCurrentDirectory()+"shoot_cut.sh", tempfilepath, temppicpath)
 		// cmd := fmt.Sprintf("-y -i %s -y -f image2 -ss 00:00:01 -t 0.001 %s", tempfilepath, temppicpath)
@@ -241,39 +267,19 @@ func (fs *FilerServer) uploadReader(ctx context.Context, w http.ResponseWriter, 
 
 		defer os.Remove(temppicpath)
 
+		path := r.URL.Path
+
+		//处理指定文件上传时，cover覆盖video的bug
+		if !strings.HasSuffix(path, "/") {
+			path = filepath.Dir(path)
+			r.URL.Path = path
+		}
+
 		_, _, err = fs.uploadReader(ctx, w, r, util.NewBytesReader(picBytes), chunkSize, picid, "", so, false)
 
 		if err != nil {
 			return nil, nil, err
 		}
-
-		reader = util.NewBytesReader(bs)
-
-	}
-
-	if contentType == "" {
-
-		contentType = mime.TypeByExtension(strings.ToLower(filepath.Ext(fileName)))
-	}
-
-	if strings.HasPrefix(fileName, "/") {
-		fileName = fileName[1:]
-	}
-
-	fileChunks, md5Hash, chunkOffset, err, smallContent := fs.uploadReaderToChunks(w, r, reader, chunkSize, fileName, contentType, so)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	md5bytes = md5Hash.Sum(nil)
-	filerResult, err = fs.saveMetaData(ctx, r, fileName, contentType, so, md5bytes, fileChunks, chunkOffset, smallContent)
-
-	if err != nil {
-		return nil, nil, err
-	}
-
-	if isVideo {
-		//执行shell脚本
 		filerResult.Cover = picid
 	}
 
